@@ -446,18 +446,21 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
     ) -> httpx.Response:
         """Process multipart/form-data requests, handling both files and form fields"""
         form_data = await request.form()
-        files = {}
-        form_data_dict = {}
+        files: List[Tuple[str, Tuple[Optional[str], bytes, Optional[str]]]] = []
+        form_data_dict: List[Tuple[str, str]] = []
 
-        for field_name, field_value in form_data.items():
+        for field_name, field_value in form_data.multi_items():
             if isinstance(field_value, (StarletteUploadFile, UploadFile)):
-                files[
-                    field_name
-                ] = await HttpPassThroughEndpointHelpers._build_request_files_from_upload_file(
-                    upload_file=field_value
+                files.append(
+                    (
+                        field_name,
+                        await HttpPassThroughEndpointHelpers._build_request_files_from_upload_file(
+                            upload_file=field_value
+                        ),
+                    )
                 )
             else:
-                form_data_dict[field_name] = field_value
+                form_data_dict.append((field_name, field_value))
 
         # Remove content-type header - httpx will set it correctly with the new boundary
         # when it creates the multipart body from files/data parameters

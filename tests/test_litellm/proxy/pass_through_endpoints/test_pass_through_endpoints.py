@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from fastapi import Request, UploadFile
-from starlette.datastructures import Headers, QueryParams
+from starlette.datastructures import FormData, Headers, QueryParams
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 sys.path.insert(
@@ -85,7 +85,7 @@ async def test_make_multipart_http_request():
     upload_file = UploadFile(file=file, filename="test.txt", headers=headers)
     upload_file.read = AsyncMock(return_value=file_content)
 
-    form_data = {"file": upload_file, "text_field": "test value"}
+    form_data = FormData([("file", upload_file), ("text_field", "test value")])
     request.form = AsyncMock(return_value=form_data)
 
     # Mock httpx client
@@ -114,9 +114,69 @@ async def test_make_multipart_http_request():
 
     assert call_args["method"] == "POST"
     assert str(call_args["url"]) == "http://test.com"
-    assert isinstance(call_args["files"], dict)
-    assert isinstance(call_args["data"], dict)
-    assert call_args["data"]["text_field"] == "test value"
+    assert isinstance(call_args["files"], list)
+    assert len(call_args["files"]) == 1
+    assert call_args["files"][0][0] == "file"
+    assert call_args["files"][0][1] == ("test.txt", file_content, "text/plain")
+    assert isinstance(call_args["data"], list)
+    assert ("text_field", "test value") in call_args["data"]
+
+
+@pytest.mark.asyncio
+async def test_make_multipart_http_request_multiple_distinct_files():
+    """
+    Test that multiple files with distinct keys are all preserved.
+    """
+    request = MagicMock(spec=Request)
+    request.method = "POST"
+
+    file_content_a = b"content a"
+    file_a = BytesIO(file_content_a)
+    upload_a = UploadFile(
+        file=file_a, filename="a.txt", headers=Headers({"content-type": "text/plain"})
+    )
+    upload_a.read = AsyncMock(return_value=file_content_a)
+
+    file_content_b = b"content b"
+    file_b = BytesIO(file_content_b)
+    upload_b = UploadFile(
+        file=file_b,
+        filename="b.png",
+        headers=Headers({"content-type": "image/png"}),
+    )
+    upload_b.read = AsyncMock(return_value=file_content_b)
+
+    form_data = FormData(
+        [("document", upload_a), ("image", upload_b), ("purpose", "batch")]
+    )
+    request.form = AsyncMock(return_value=form_data)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {}
+
+    async_client = MagicMock()
+    async_client.request = AsyncMock(return_value=mock_response)
+
+    response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
+        request=request,
+        async_client=async_client,
+        url=httpx.URL("http://test.com"),
+        headers={},
+        requested_query_params=None,
+    )
+
+    assert response == mock_response
+    call_args = async_client.request.call_args[1]
+
+    # Both files with distinct keys must be present
+    assert isinstance(call_args["files"], list)
+    assert len(call_args["files"]) == 2
+    assert call_args["files"][0] == ("document", ("a.txt", file_content_a, "text/plain"))
+    assert call_args["files"][1] == ("image", ("b.png", file_content_b, "image/png"))
+
+    assert isinstance(call_args["data"], list)
+    assert call_args["data"] == [("purpose", "batch")]
 
 
 @pytest.mark.asyncio
@@ -140,7 +200,7 @@ async def test_make_multipart_http_request_removes_content_type_header():
     upload_file = UploadFile(file=file, filename="test.txt", headers=headers)
     upload_file.read = AsyncMock(return_value=file_content)
 
-    form_data = {"file": upload_file, "key": "value"}
+    form_data = FormData([("file", upload_file), ("key", "value")])
     request.form = AsyncMock(return_value=form_data)
 
     # Mock httpx client
@@ -184,13 +244,87 @@ async def test_make_multipart_http_request_removes_content_type_header():
     # Verify other parameters are correct
     assert call_args["method"] == "POST"
     assert str(call_args["url"]) == "http://test.com"
-    assert isinstance(call_args["files"], dict)
-    assert isinstance(call_args["data"], dict)
-    assert call_args["data"]["key"] == "value"
+    assert isinstance(call_args["files"], list)
+    assert len(call_args["files"]) == 1
+    assert call_args["files"][0][0] == "file"
+    assert call_args["files"][0][1] == ("test.txt", file_content, "text/plain")
+    assert isinstance(call_args["data"], list)
+    assert ("key", "value") in call_args["data"]
     assert call_args["params"] == {"param": "value"}
 
     # Verify the original headers dict was not modified (copy was used)
     assert "content-type" in original_headers
+
+
+@pytest.mark.asyncio
+async def test_make_multipart_http_request_duplicate_keys():
+    """
+    Test that make_multipart_http_request preserves duplicate keys
+    in multipart form data. Starlette's FormData is a MultiDict,
+    and both file fields and regular fields can appear multiple times
+    with the same key name.
+    """
+    request = MagicMock(spec=Request)
+    request.method = "POST"
+
+    # Create two distinct upload files with the same field name "file"
+    file_content_1 = b"first file content"
+    file1 = BytesIO(file_content_1)
+    headers1 = Headers({"content-type": "text/plain"})
+    upload_file_1 = UploadFile(file=file1, filename="file1.txt", headers=headers1)
+    upload_file_1.read = AsyncMock(return_value=file_content_1)
+
+    file_content_2 = b"second file content"
+    file2 = BytesIO(file_content_2)
+    headers2 = Headers({"content-type": "text/plain"})
+    upload_file_2 = UploadFile(file=file2, filename="file2.txt", headers=headers2)
+    upload_file_2.read = AsyncMock(return_value=file_content_2)
+
+    # FormData with duplicate keys: two files named "file", two text fields named "tag"
+    form_data = FormData(
+        [
+            ("file", upload_file_1),
+            ("file", upload_file_2),
+            ("tag", "alpha"),
+            ("tag", "beta"),
+        ]
+    )
+    request.form = AsyncMock(return_value=form_data)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {}
+
+    async_client = MagicMock()
+    async_client.request = AsyncMock(return_value=mock_response)
+
+    response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
+        request=request,
+        async_client=async_client,
+        url=httpx.URL("http://test.com"),
+        headers={},
+        requested_query_params=None,
+    )
+
+    assert response == mock_response
+    async_client.request.assert_called_once()
+    call_args = async_client.request.call_args[1]
+
+    # Both file entries must be present (list of tuples, not dict)
+    assert isinstance(call_args["files"], list)
+    assert len(call_args["files"]) == 2
+    file_names = [name for name, _ in call_args["files"]]
+    assert file_names == ["file", "file"]
+    # Verify both file contents are distinct
+    file_tuples = [val for _, val in call_args["files"]]
+    assert file_tuples[0] == ("file1.txt", file_content_1, "text/plain")
+    assert file_tuples[1] == ("file2.txt", file_content_2, "text/plain")
+
+    # Both text field entries must be present
+    assert isinstance(call_args["data"], list)
+    assert len(call_args["data"]) == 2
+    assert ("tag", "alpha") in call_args["data"]
+    assert ("tag", "beta") in call_args["data"]
 
 
 @pytest.mark.asyncio
