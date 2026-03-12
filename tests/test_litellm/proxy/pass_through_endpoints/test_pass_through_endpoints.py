@@ -282,6 +282,47 @@ async def test_make_multipart_http_request_duplicate_keys():
 
 
 @pytest.mark.asyncio
+async def test_make_multipart_http_request_preserves_repeated_image_array_fields():
+    request = MagicMock(spec=Request)
+    request.method = "POST"
+
+    upload_file_1 = _create_upload_file("image-1.png", b"first image", "image/png")
+    upload_file_2 = _create_upload_file("image-2.png", b"second image", "image/png")
+
+    form_data = FormData(
+        [
+            ("image[]", upload_file_1),
+            ("image[]", upload_file_2),
+            ("prompt", "edit all images"),
+            ("model", "gpt-image-1"),
+        ]
+    )
+    request.form = AsyncMock(return_value=form_data)
+
+    async_client = EncodingAwareAsyncClient()
+
+    response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
+        request=request,
+        async_client=async_client,
+        url=httpx.URL("http://test.com"),
+        headers={},
+        requested_query_params=None,
+    )
+
+    assert response.status_code == 200
+    assert async_client.last_request is not None
+    request_body = _get_request_body_text(async_client.last_request)
+
+    assert request_body.count('name="image[]"; filename=') == 2
+    assert 'name="image[]"; filename="image-1.png"' in request_body
+    assert 'name="image[]"; filename="image-2.png"' in request_body
+    assert "first image" in request_body
+    assert "second image" in request_body
+    assert 'name="prompt"' in request_body
+    assert 'name="model"' in request_body
+
+
+@pytest.mark.asyncio
 async def test_make_multipart_http_request_with_bytes_field():
     request = MagicMock(spec=Request)
     request.method = "POST"

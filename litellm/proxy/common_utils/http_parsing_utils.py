@@ -13,6 +13,48 @@ from litellm.proxy.common_utils.callback_utils import (
 from litellm.types.router import Deployment
 
 
+def _is_json_content_type(content_type: str) -> bool:
+    return "application/json" in content_type
+
+
+def _normalize_form_key(form_key: str) -> tuple[str, bool]:
+    if form_key.endswith("[]"):
+        return form_key[:-2], True
+    return form_key, False
+
+
+def _normalize_form_data(form_data: Any) -> Dict[str, Any]:
+    if hasattr(form_data, "multi_items"):
+        form_items = form_data.multi_items()
+    else:
+        form_items = form_data.items()
+
+    parsed_form_data: Dict[str, Any] = {}
+    seen_counts: Dict[str, int] = {}
+
+    for raw_key, value in form_items:
+        if not isinstance(raw_key, str):
+            continue
+
+        key, expects_array = _normalize_form_key(raw_key)
+        seen_count = seen_counts.get(key, 0)
+
+        if seen_count == 0:
+            parsed_form_data[key] = [value] if expects_array else value
+        elif seen_count == 1 and not isinstance(parsed_form_data[key], list):
+            parsed_form_data[key] = [parsed_form_data[key], value]
+        else:
+            parsed_form_data[key].append(value)
+
+        seen_counts[key] = seen_count + 1
+
+    metadata = parsed_form_data.get("metadata")
+    if isinstance(metadata, str):
+        parsed_form_data["metadata"] = json.loads(metadata)
+
+    return parsed_form_data
+
+
 async def _read_request_body(request: Optional[Request]) -> Dict:
     """
     Safely read the request body and parse it as JSON.
@@ -38,9 +80,7 @@ async def _read_request_body(request: Optional[Request]) -> Dict:
         content_type = _request_headers.get("content-type", "")
 
         if "form" in content_type:
-            parsed_body = dict(await request.form())
-            if "metadata" in parsed_body and isinstance(parsed_body["metadata"], str):
-                parsed_body["metadata"] = json.loads(parsed_body["metadata"])
+            parsed_body = _normalize_form_data(await request.form())
         else:
             # Read the request body
             body = await request.body()
@@ -239,17 +279,7 @@ async def get_form_data(request: Request) -> Dict[str, Any]:
 
     Handles when OpenAI SDKs pass form keys as `timestamp_granularities[]="word"` instead of `timestamp_granularities=["word", "sentence"]`
     """
-    form = await request.form()
-    form_data = dict(form)
-    parsed_form_data: dict[str, Any] = {}
-    for key, value in form_data.items():
-        # OpenAI SDKs pass form keys as `timestamp_granularities[]="word"` instead of `timestamp_granularities=["word", "sentence"]`
-        if key.endswith("[]"):
-            clean_key = key[:-2]
-            parsed_form_data.setdefault(clean_key, []).append(value)
-        else:
-            parsed_form_data[key] = value
-    return parsed_form_data
+    return _normalize_form_data(await request.form())
 
 
 async def convert_upload_files_to_file_data(
@@ -302,16 +332,17 @@ async def get_request_body(request: Request) -> Dict[str, Any]:
     Read the request body and parse it as JSON.
     """
     if request.method == "POST":
-        if request.headers.get("content-type", "") == "application/json":
+        content_type = request.headers.get("content-type", "")
+        if _is_json_content_type(content_type):
             return await _read_request_body(request)
         elif (
-            "multipart/form-data" in request.headers.get("content-type", "")
-            or "application/x-www-form-urlencoded" in request.headers.get("content-type", "")
+            "multipart/form-data" in content_type
+            or "application/x-www-form-urlencoded" in content_type
         ):
             return await get_form_data(request)
         else:
             raise ValueError(
-                f"Unsupported content type: {request.headers.get('content-type')}"
+                f"Unsupported content type: {content_type}"
             )
     return {}
 

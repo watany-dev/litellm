@@ -30,7 +30,6 @@ from litellm.proxy.common_utils.http_parsing_utils import (
     _read_request_body,
     _safe_get_request_headers,
     _safe_set_request_parsed_body,
-    get_form_data,
     get_request_body,
 )
 from litellm.proxy.pass_through_endpoints.common_utils import get_litellm_virtual_key
@@ -84,7 +83,23 @@ def is_passthrough_request_streaming(request_body: dict) -> bool:
     """
     Returns True if the request is streaming
     """
-    return request_body.get("stream", False)
+    stream = request_body.get("stream", False)
+    if isinstance(stream, str):
+        return stream.lower() == "true"
+    return bool(stream)
+
+
+async def _get_request_body_for_stream_detection(request: Request) -> dict:
+    if request.method != "POST":
+        return {}
+
+    try:
+        return await get_request_body(request)
+    except (ProxyException, ValueError) as e:
+        verbose_proxy_logger.debug(
+            "Unable to parse passthrough request body for stream detection: %s", e
+        )
+        return {}
 
 
 async def llm_passthrough_factory_proxy_route(
@@ -153,15 +168,9 @@ async def llm_passthrough_factory_proxy_route(
 
     ## check for streaming
     is_streaming_request = False
-    # anthropic is streaming when 'stream' = True is in the body
-    if request.method == "POST":
-        if "multipart/form-data" not in request.headers.get("content-type", ""):
-            _request_body = await request.json()
-        else:
-            _request_body = await get_form_data(request)
-
-        if _request_body.get("stream"):
-            is_streaming_request = True
+    _request_body = await _get_request_body_for_stream_detection(request)
+    if is_passthrough_request_streaming(_request_body):
+        is_streaming_request = True
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
@@ -408,11 +417,9 @@ async def mistral_proxy_route(
 
     ## check for streaming
     is_streaming_request = False
-    # anthropic is streaming when 'stream' = True is in the body
-    if request.method == "POST":
-        _request_body = await request.json()
-        if _request_body.get("stream"):
-            is_streaming_request = True
+    _request_body = await _get_request_body_for_stream_detection(request)
+    if is_passthrough_request_streaming(_request_body):
+        is_streaming_request = True
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
@@ -560,15 +567,8 @@ async def milvus_proxy_route(
 
 
 async def is_streaming_request_fn(request: Request) -> bool:
-    if request.method == "POST":
-        content_type = request.headers.get("content-type", None)
-        if content_type and "multipart/form-data" in content_type:
-            _request_body = await get_form_data(request)
-        else:
-            _request_body = await _read_request_body(request)
-        if _request_body.get("stream"):
-            return True
-    return False
+    request_body = await _get_request_body_for_stream_detection(request)
+    return is_passthrough_request_streaming(request_body)
 
 
 @router.api_route(
@@ -1052,15 +1052,23 @@ async def bedrock_proxy_route(
     # Add or update query parameters
     from litellm.llms.bedrock.chat import BedrockConverseLLM
 
+    content_type = request.headers.get("content-type", "")
+    if "application/json" not in content_type:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Bedrock agent runtime passthrough only supports application/json request bodies."
+            },
+        )
+
     bedrock_llm = BedrockConverseLLM()
     credentials: Credentials = bedrock_llm.get_credentials()  # type: ignore
     sigv4 = SigV4Auth(credentials, "bedrock", aws_region_name)
     headers = {"Content-Type": "application/json"}
-    # Assuming the body contains JSON data, parse it
     try:
-        data = await request.json()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail={"error": e})
+        data = await get_request_body(request)
+    except ProxyException as e:
+        raise HTTPException(status_code=int(e.code), detail={"error": e.message}) from e
     _request = AWSRequest(
         method="POST", url=str(updated_url), data=json.dumps(data), headers=headers
     )
@@ -1232,11 +1240,9 @@ async def assemblyai_proxy_route(
 
     ## check for streaming
     is_streaming_request = False
-    # assemblyai is streaming when 'stream' = True is in the body
-    if request.method == "POST":
-        _request_body = await request.json()
-        if _request_body.get("stream"):
-            is_streaming_request = True
+    _request_body = await _get_request_body_for_stream_detection(request)
+    if is_passthrough_request_streaming(_request_body):
+        is_streaming_request = True
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(

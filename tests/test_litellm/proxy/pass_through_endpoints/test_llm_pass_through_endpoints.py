@@ -18,6 +18,7 @@ import litellm
 from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     BaseOpenAIPassThroughHandler,
     RouteChecks,
+    bedrock_proxy_route,
     bedrock_llm_proxy_route,
     create_pass_through_route,
     cursor_proxy_route,
@@ -1027,6 +1028,20 @@ async def test_is_streaming_request_fn():
     assert await is_streaming_request_fn(mock_request) is True
 
 
+@pytest.mark.asyncio
+async def test_is_streaming_request_fn_false_string():
+    from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
+        is_streaming_request_fn,
+    )
+
+    mock_request = Mock()
+    mock_request.method = "POST"
+    mock_request.headers = {"content-type": "multipart/form-data"}
+    mock_request.form = AsyncMock(return_value={"stream": "false"})
+
+    assert await is_streaming_request_fn(mock_request) is False
+
+
 class TestBedrockLLMProxyRoute:
     @pytest.mark.asyncio
     async def test_bedrock_llm_proxy_route_application_inference_profile(self):
@@ -1107,6 +1122,31 @@ class TestBedrockLLMProxyRoute:
             # For regular models, model should be just the model ID
             assert call_kwargs["model"] == "anthropic.claude-3-sonnet-20240229-v1:0"
             assert result == "success"
+
+    @pytest.mark.asyncio
+    async def test_bedrock_proxy_route_rejects_non_json_agent_runtime_body(self):
+        from fastapi import HTTPException
+
+        mock_request = Mock()
+        mock_request.method = "POST"
+        mock_request.headers = {"content-type": "multipart/form-data; boundary=123"}
+        mock_request.url = Mock()
+        mock_request.url.path = "/bedrock/knowledgebases/kb-123/retrieve"
+        mock_request.query_params = {}
+        mock_request.cookies = {}
+        mock_response = Mock()
+        mock_user_api_key_dict = Mock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await bedrock_proxy_route(
+                endpoint="knowledgebases/kb-123/retrieve",
+                request=mock_request,
+                fastapi_response=mock_response,
+                user_api_key_dict=mock_user_api_key_dict,
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "application/json" in exc_info.value.detail["error"]
 
     @pytest.mark.asyncio
     async def test_bedrock_error_handling_returns_actual_error(self):
@@ -1355,7 +1395,7 @@ class TestLLMPassthroughFactoryProxyRoute:
 
         mock_request = MagicMock(spec=Request)
         mock_request.method = "POST"
-        mock_request.json = AsyncMock(return_value={"stream": False})
+        mock_request.headers = {"content-type": "application/json; charset=utf-8"}
         mock_fastapi_response = MagicMock(spec=Response)
         mock_user_api_key_dict = MagicMock()
 
@@ -1364,6 +1404,9 @@ class TestLLMPassthroughFactoryProxyRoute:
         ) as mock_get_provider, patch(
             "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints.passthrough_endpoint_router.get_credentials"
         ) as mock_get_creds, patch(
+            "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints._get_request_body_for_stream_detection",
+            AsyncMock(return_value={"stream": False}),
+        ) as mock_get_request_body, patch(
             "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints.create_pass_through_route"
         ) as mock_create_route:
             mock_provider_config = MagicMock()
@@ -1392,6 +1435,7 @@ class TestLLMPassthroughFactoryProxyRoute:
             mock_get_creds.assert_called_once_with(
                 custom_llm_provider=LlmProviders.VLLM, region_name=None
             )
+            mock_get_request_body.assert_awaited_once_with(mock_request)
             mock_create_route.assert_called_once_with(
                 endpoint="/chat/completions",
                 target="https://example.com/v1/chat/completions",
@@ -1399,6 +1443,51 @@ class TestLLMPassthroughFactoryProxyRoute:
                 is_streaming_request=False,
             )
             mock_endpoint_func.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_llm_passthrough_factory_proxy_route_handles_multipart_stream_detection(
+        self,
+    ):
+        from litellm.types.utils import LlmProviders
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.method = "POST"
+        mock_request.headers = {"content-type": "multipart/form-data; boundary=123"}
+        mock_fastapi_response = MagicMock(spec=Response)
+        mock_user_api_key_dict = MagicMock()
+
+        with patch(
+            "litellm.utils.ProviderConfigManager.get_provider_model_info"
+        ) as mock_get_provider, patch(
+            "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints.passthrough_endpoint_router.get_credentials"
+        ) as mock_get_creds, patch(
+            "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints._get_request_body_for_stream_detection",
+            AsyncMock(return_value={"image": [Mock(), Mock()], "stream": False}),
+        ) as mock_get_request_body, patch(
+            "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints.create_pass_through_route"
+        ) as mock_create_route:
+            mock_provider_config = MagicMock()
+            mock_provider_config.get_api_base.return_value = "https://example.com/v1"
+            mock_provider_config.validate_environment.return_value = {
+                "x-api-key": "dummy"
+            }
+            mock_get_provider.return_value = mock_provider_config
+            mock_get_creds.return_value = "dummy"
+
+            mock_endpoint_func = AsyncMock(return_value="success")
+            mock_create_route.return_value = mock_endpoint_func
+
+            result = await llm_passthrough_factory_proxy_route(
+                custom_llm_provider=LlmProviders.VLLM,
+                endpoint="/images/edits",
+                request=mock_request,
+                fastapi_response=mock_fastapi_response,
+                user_api_key_dict=mock_user_api_key_dict,
+            )
+
+            assert result == "success"
+            mock_get_request_body.assert_awaited_once_with(mock_request)
+            assert mock_create_route.call_args.kwargs["is_streaming_request"] is False
 
 
 class TestVLLMProxyRoute:
