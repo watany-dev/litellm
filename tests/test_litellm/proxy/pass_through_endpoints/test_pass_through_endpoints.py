@@ -23,6 +23,34 @@ from litellm.proxy.pass_through_endpoints.success_handler import (
 )
 
 
+def _create_upload_file(
+    filename: str, file_content: bytes, content_type: str = "text/plain"
+) -> UploadFile:
+    upload_file = UploadFile(
+        file=BytesIO(file_content),
+        filename=filename,
+        headers=Headers({"content-type": content_type}),
+    )
+    upload_file.read = AsyncMock(return_value=file_content)
+    return upload_file
+
+
+class EncodingAwareAsyncClient:
+    def __init__(self) -> None:
+        self.last_request: httpx.Request | None = None
+        self.last_kwargs = {}
+
+    async def request(self, method, url, **kwargs):
+        self.last_kwargs = kwargs
+        self.last_request = httpx.Request(method, url, **kwargs)
+        self.last_request.read()
+        return httpx.Response(status_code=200, headers={}, request=self.last_request)
+
+
+def _get_request_body_text(request: httpx.Request) -> str:
+    return request.content.decode("utf-8")
+
+
 # Test is_multipart
 def test_is_multipart():
     # Test with multipart content type
@@ -73,30 +101,15 @@ async def test_build_request_files_from_upload_file():
 # Test make_multipart_http_request
 @pytest.mark.asyncio
 async def test_make_multipart_http_request():
-    # Mock request with file and form field
     request = MagicMock(spec=Request)
     request.method = "POST"
 
-    # Mock form data
     file_content = b"test file content"
-    file = BytesIO(file_content)
-    # Create SpooledTemporaryFile with content type headers
-    headers = Headers({"content-type": "text/plain"})
-    upload_file = UploadFile(file=file, filename="test.txt", headers=headers)
-    upload_file.read = AsyncMock(return_value=file_content)
-
+    upload_file = _create_upload_file("test.txt", file_content)
     form_data = FormData([("file", upload_file), ("text_field", "test value")])
     request.form = AsyncMock(return_value=form_data)
 
-    # Mock httpx client
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.headers = {}
-
-    async_client = MagicMock()
-    async_client.request = AsyncMock(return_value=mock_response)
-
-    # Test the function
+    async_client = EncodingAwareAsyncClient()
     response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
         request=request,
         async_client=async_client,
@@ -105,21 +118,18 @@ async def test_make_multipart_http_request():
         requested_query_params=None,
     )
 
-    # Verify the response
-    assert response == mock_response
+    assert response.status_code == 200
+    assert async_client.last_request is not None
+    request_body = _get_request_body_text(async_client.last_request)
 
-    # Verify the client call
-    async_client.request.assert_called_once()
-    call_args = async_client.request.call_args[1]
-
-    assert call_args["method"] == "POST"
-    assert str(call_args["url"]) == "http://test.com"
-    assert isinstance(call_args["files"], list)
-    assert len(call_args["files"]) == 1
-    assert call_args["files"][0][0] == "file"
-    assert call_args["files"][0][1] == ("test.txt", file_content, "text/plain")
-    assert isinstance(call_args["data"], list)
-    assert ("text_field", "test value") in call_args["data"]
+    assert str(async_client.last_request.url) == "http://test.com"
+    assert async_client.last_request.headers["content-type"].startswith(
+        "multipart/form-data; boundary="
+    )
+    assert 'name="file"; filename="test.txt"' in request_body
+    assert "test file content" in request_body
+    assert 'name="text_field"' in request_body
+    assert "test value" in request_body
 
 
 @pytest.mark.asyncio
@@ -131,32 +141,16 @@ async def test_make_multipart_http_request_multiple_distinct_files():
     request.method = "POST"
 
     file_content_a = b"content a"
-    file_a = BytesIO(file_content_a)
-    upload_a = UploadFile(
-        file=file_a, filename="a.txt", headers=Headers({"content-type": "text/plain"})
-    )
-    upload_a.read = AsyncMock(return_value=file_content_a)
-
     file_content_b = b"content b"
-    file_b = BytesIO(file_content_b)
-    upload_b = UploadFile(
-        file=file_b,
-        filename="b.png",
-        headers=Headers({"content-type": "image/png"}),
-    )
-    upload_b.read = AsyncMock(return_value=file_content_b)
+    upload_a = _create_upload_file("a.txt", file_content_a)
+    upload_b = _create_upload_file("b.png", file_content_b, "image/png")
 
     form_data = FormData(
         [("document", upload_a), ("image", upload_b), ("purpose", "batch")]
     )
     request.form = AsyncMock(return_value=form_data)
 
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.headers = {}
-
-    async_client = MagicMock()
-    async_client.request = AsyncMock(return_value=mock_response)
+    async_client = EncodingAwareAsyncClient()
 
     response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
         request=request,
@@ -166,17 +160,16 @@ async def test_make_multipart_http_request_multiple_distinct_files():
         requested_query_params=None,
     )
 
-    assert response == mock_response
-    call_args = async_client.request.call_args[1]
+    assert response.status_code == 200
+    assert async_client.last_request is not None
+    request_body = _get_request_body_text(async_client.last_request)
 
-    # Both files with distinct keys must be present
-    assert isinstance(call_args["files"], list)
-    assert len(call_args["files"]) == 2
-    assert call_args["files"][0] == ("document", ("a.txt", file_content_a, "text/plain"))
-    assert call_args["files"][1] == ("image", ("b.png", file_content_b, "image/png"))
-
-    assert isinstance(call_args["data"], list)
-    assert call_args["data"] == [("purpose", "batch")]
+    assert 'name="document"; filename="a.txt"' in request_body
+    assert "content a" in request_body
+    assert 'name="image"; filename="b.png"' in request_body
+    assert "content b" in request_body
+    assert 'name="purpose"' in request_body
+    assert "batch" in request_body
 
 
 @pytest.mark.asyncio
@@ -193,23 +186,12 @@ async def test_make_multipart_http_request_removes_content_type_header():
     request = MagicMock(spec=Request)
     request.method = "POST"
 
-    # Mock form data with both file and regular field
     file_content = b"test file content"
-    file = BytesIO(file_content)
-    headers = Headers({"content-type": "text/plain"})
-    upload_file = UploadFile(file=file, filename="test.txt", headers=headers)
-    upload_file.read = AsyncMock(return_value=file_content)
-
+    upload_file = _create_upload_file("test.txt", file_content)
     form_data = FormData([("file", upload_file), ("key", "value")])
     request.form = AsyncMock(return_value=form_data)
 
-    # Mock httpx client
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.headers = {}
-
-    async_client = MagicMock()
-    async_client.request = AsyncMock(return_value=mock_response)
+    async_client = EncodingAwareAsyncClient()
 
     # Headers with content-type containing old boundary (this is what causes the issue)
     original_headers = {
@@ -227,32 +209,25 @@ async def test_make_multipart_http_request_removes_content_type_header():
         requested_query_params={"param": "value"},
     )
 
-    # Verify the response
-    assert response == mock_response
+    assert response.status_code == 200
+    assert async_client.last_request is not None
+    request_body = _get_request_body_text(async_client.last_request)
 
-    # Verify the client call
-    async_client.request.assert_called_once()
-    call_args = async_client.request.call_args[1]
+    assert str(async_client.last_request.url) == "http://test.com?param=value"
+    assert async_client.last_kwargs["headers"]["user-agent"] == "PostmanRuntime/7.49.0"
+    assert async_client.last_kwargs["headers"]["Authorization"] == "bearer sk-1234"
+    assert "content-type" not in async_client.last_kwargs["headers"]
+    assert async_client.last_request.headers["content-type"].startswith(
+        "multipart/form-data; boundary="
+    )
+    assert (
+        "--------------------------416423083260054165225918"
+        not in async_client.last_request.headers["content-type"]
+    )
+    assert 'name="file"; filename="test.txt"' in request_body
+    assert 'name="key"' in request_body
+    assert "value" in request_body
 
-    # CRITICAL ASSERTION: content-type header should be removed
-    assert "content-type" not in call_args["headers"]
-
-    # Other headers should be preserved
-    assert call_args["headers"]["user-agent"] == "PostmanRuntime/7.49.0"
-    assert call_args["headers"]["Authorization"] == "bearer sk-1234"
-
-    # Verify other parameters are correct
-    assert call_args["method"] == "POST"
-    assert str(call_args["url"]) == "http://test.com"
-    assert isinstance(call_args["files"], list)
-    assert len(call_args["files"]) == 1
-    assert call_args["files"][0][0] == "file"
-    assert call_args["files"][0][1] == ("test.txt", file_content, "text/plain")
-    assert isinstance(call_args["data"], list)
-    assert ("key", "value") in call_args["data"]
-    assert call_args["params"] == {"param": "value"}
-
-    # Verify the original headers dict was not modified (copy was used)
     assert "content-type" in original_headers
 
 
@@ -267,20 +242,11 @@ async def test_make_multipart_http_request_duplicate_keys():
     request = MagicMock(spec=Request)
     request.method = "POST"
 
-    # Create two distinct upload files with the same field name "file"
     file_content_1 = b"first file content"
-    file1 = BytesIO(file_content_1)
-    headers1 = Headers({"content-type": "text/plain"})
-    upload_file_1 = UploadFile(file=file1, filename="file1.txt", headers=headers1)
-    upload_file_1.read = AsyncMock(return_value=file_content_1)
-
     file_content_2 = b"second file content"
-    file2 = BytesIO(file_content_2)
-    headers2 = Headers({"content-type": "text/plain"})
-    upload_file_2 = UploadFile(file=file2, filename="file2.txt", headers=headers2)
-    upload_file_2.read = AsyncMock(return_value=file_content_2)
+    upload_file_1 = _create_upload_file("file1.txt", file_content_1)
+    upload_file_2 = _create_upload_file("file2.txt", file_content_2)
 
-    # FormData with duplicate keys: two files named "file", two text fields named "tag"
     form_data = FormData(
         [
             ("file", upload_file_1),
@@ -291,12 +257,7 @@ async def test_make_multipart_http_request_duplicate_keys():
     )
     request.form = AsyncMock(return_value=form_data)
 
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.headers = {}
-
-    async_client = MagicMock()
-    async_client.request = AsyncMock(return_value=mock_response)
+    async_client = EncodingAwareAsyncClient()
 
     response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
         request=request,
@@ -306,25 +267,77 @@ async def test_make_multipart_http_request_duplicate_keys():
         requested_query_params=None,
     )
 
-    assert response == mock_response
-    async_client.request.assert_called_once()
-    call_args = async_client.request.call_args[1]
+    assert response.status_code == 200
+    assert async_client.last_request is not None
+    request_body = _get_request_body_text(async_client.last_request)
 
-    # Both file entries must be present (list of tuples, not dict)
-    assert isinstance(call_args["files"], list)
-    assert len(call_args["files"]) == 2
-    file_names = [name for name, _ in call_args["files"]]
-    assert file_names == ["file", "file"]
-    # Verify both file contents are distinct
-    file_tuples = [val for _, val in call_args["files"]]
-    assert file_tuples[0] == ("file1.txt", file_content_1, "text/plain")
-    assert file_tuples[1] == ("file2.txt", file_content_2, "text/plain")
+    assert request_body.count('name="file"; filename=') == 2
+    assert 'name="file"; filename="file1.txt"' in request_body
+    assert 'name="file"; filename="file2.txt"' in request_body
+    assert "first file content" in request_body
+    assert "second file content" in request_body
+    assert request_body.count('name="tag"') == 2
+    assert "alpha" in request_body
+    assert "beta" in request_body
 
-    # Both text field entries must be present
-    assert isinstance(call_args["data"], list)
-    assert len(call_args["data"]) == 2
-    assert ("tag", "alpha") in call_args["data"]
-    assert ("tag", "beta") in call_args["data"]
+
+@pytest.mark.asyncio
+async def test_make_multipart_http_request_with_bytes_field():
+    request = MagicMock(spec=Request)
+    request.method = "POST"
+
+    form_data = FormData([("payload", b"raw bytes value"), ("tag", "alpha")])
+    request.form = AsyncMock(return_value=form_data)
+
+    async_client = EncodingAwareAsyncClient()
+
+    response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
+        request=request,
+        async_client=async_client,
+        url=httpx.URL("http://test.com"),
+        headers={},
+        requested_query_params=None,
+    )
+
+    assert response.status_code == 200
+    assert async_client.last_request is not None
+    request_body = _get_request_body_text(async_client.last_request)
+
+    assert 'name="payload"' in request_body
+    assert "raw bytes value" in request_body
+    assert 'name="tag"' in request_body
+    assert "alpha" in request_body
+
+
+@pytest.mark.asyncio
+async def test_make_multipart_http_request_file_only_form():
+    request = MagicMock(spec=Request)
+    request.method = "POST"
+
+    file_content = b"only file content"
+    upload_file = _create_upload_file("only.txt", file_content)
+    request.form = AsyncMock(return_value=FormData([("file", upload_file)]))
+
+    async_client = EncodingAwareAsyncClient()
+
+    response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
+        request=request,
+        async_client=async_client,
+        url=httpx.URL("http://test.com"),
+        headers={},
+        requested_query_params=None,
+    )
+
+    assert response.status_code == 200
+    assert async_client.last_request is not None
+    request_body = _get_request_body_text(async_client.last_request)
+
+    assert async_client.last_request.headers["content-type"].startswith(
+        "multipart/form-data; boundary="
+    )
+    assert request_body
+    assert 'name="file"; filename="only.txt"' in request_body
+    assert "only file content" in request_body
 
 
 @pytest.mark.asyncio
