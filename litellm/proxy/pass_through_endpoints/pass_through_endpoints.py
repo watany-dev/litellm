@@ -437,21 +437,6 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
         return (upload_file.filename, file_content, upload_file.content_type)
 
     @staticmethod
-    def _build_multipart_form_field(
-        field_value: Any,
-    ) -> Tuple[None, Union[str, bytes]]:
-        """
-        Build a multipart form field value for httpx.
-
-        Passing regular form fields through `files=` preserves duplicate keys while
-        still allowing httpx to build a multipart body.
-        """
-        if isinstance(field_value, bytes):
-            return (None, field_value)
-
-        return (None, str(field_value))
-
-    @staticmethod
     async def make_multipart_http_request(
         request: Request,
         async_client: httpx.AsyncClient,
@@ -461,11 +446,12 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
     ) -> httpx.Response:
         """Process multipart/form-data requests, handling both files and form fields"""
         form_data = await request.form()
-        multipart_parts: List[Tuple[str, Any]] = []
+        files: List[Tuple[str, Tuple[Optional[str], bytes, Optional[str]]]] = []
+        form_data_dict: List[Tuple[str, str]] = []
 
         for field_name, field_value in form_data.multi_items():
             if isinstance(field_value, (StarletteUploadFile, UploadFile)):
-                multipart_parts.append(
+                files.append(
                     (
                         field_name,
                         await HttpPassThroughEndpointHelpers._build_request_files_from_upload_file(
@@ -474,17 +460,10 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
                     )
                 )
             else:
-                multipart_parts.append(
-                    (
-                        field_name,
-                        HttpPassThroughEndpointHelpers._build_multipart_form_field(
-                            field_value
-                        ),
-                    )
-                )
+                form_data_dict.append((field_name, field_value))
 
         # Remove content-type header - httpx will set it correctly with the new boundary
-        # when it creates the multipart body from the files parameter.
+        # when it creates the multipart body from files/data parameters
         headers_copy = headers.copy()
         headers_copy.pop("content-type", None)
 
@@ -493,7 +472,8 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
             url=url,
             headers=headers_copy,
             params=requested_query_params,
-            files=multipart_parts or None,
+            files=files,
+            data=form_data_dict,
         )
         return response
 
