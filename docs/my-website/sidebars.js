@@ -100,6 +100,7 @@ const sidebars = {
       label: "Policies",
       items: [
         "proxy/guardrails/guardrail_policies",
+        "proxy/guardrails/policy_flow_builder",
         "proxy/guardrails/policy_templates",
         "proxy/guardrails/policy_tags",
       ],
@@ -172,7 +173,8 @@ const sidebars = {
         "tutorials/litellm_gemini_cli",
         "tutorials/google_genai_sdk",
         "tutorials/litellm_qwen_code_cli",
-        "tutorials/openai_codex"
+        "tutorials/openai_codex",
+        "tutorials/retool_assist"
       ]
     },
     {
@@ -667,6 +669,7 @@ const sidebars = {
         "rag_ingest",
         "rag_query",
         "realtime",
+        "proxy/realtime_webrtc",
         "rerank",
         "response_api",
         "response_api_compact",
@@ -814,6 +817,8 @@ const sidebars = {
         "providers/anyscale",
         "providers/apertis",
         "providers/baseten",
+        "providers/black_forest_labs",
+        "providers/black_forest_labs_img_edit",
         "providers/bytez",
         "providers/cerebras",
         "providers/chutes",
