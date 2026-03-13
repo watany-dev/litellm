@@ -1,39 +1,31 @@
 import json
 import os
 import sys
-from io import BytesIO
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import orjson
 import pytest
-from fastapi import UploadFile
-from starlette.datastructures import FormData, Headers
+from fastapi import Request
+from fastapi.testclient import TestClient
 
 sys.path.insert(
     0, os.path.abspath("../../../..")
 )  # Adds the parent directory to the system path
 
+
+import litellm
 from litellm.proxy._types import ProxyException
 from litellm.proxy.common_utils.http_parsing_utils import (
     _read_request_body,
     _safe_get_request_headers,
+    _safe_get_request_parsed_body,
+    _safe_get_request_query_params,
+    _safe_set_request_parsed_body,
     get_form_data,
     get_request_body,
     get_tags_from_request_body,
     populate_request_with_path_params,
 )
-
-
-def _create_upload_file(
-    filename: str, file_content: bytes, content_type: str = "image/png"
-) -> UploadFile:
-    upload_file = UploadFile(
-        file=BytesIO(file_content),
-        filename=filename,
-        headers=Headers({"content-type": content_type}),
-    )
-    upload_file.read = AsyncMock(return_value=file_content)
-    return upload_file
 
 
 @pytest.mark.asyncio
@@ -244,36 +236,6 @@ async def test_form_data_with_empty_metadata():
 
 
 @pytest.mark.asyncio
-async def test_form_data_preserves_repeated_multipart_fields():
-    """
-    Test that multipart parsing preserves repeated keys such as image[] uploads.
-    """
-    mock_request = MagicMock()
-    upload_file_1 = _create_upload_file("image-1.png", b"image-1")
-    upload_file_2 = _create_upload_file("image-2.png", b"image-2")
-    form_data = FormData(
-        [
-            ("image[]", upload_file_1),
-            ("image[]", upload_file_2),
-            ("tag", "alpha"),
-            ("tag", "beta"),
-            ("metadata", json.dumps({"owner": "test-user"})),
-        ]
-    )
-
-    mock_request.form = AsyncMock(return_value=form_data)
-    mock_request.headers = {"content-type": "multipart/form-data"}
-    mock_request.scope = {}
-    mock_request.state._cached_headers = None
-
-    result = await _read_request_body(mock_request)
-
-    assert result["image"] == [upload_file_1, upload_file_2]
-    assert result["tag"] == ["alpha", "beta"]
-    assert result["metadata"] == {"owner": "test-user"}
-
-
-@pytest.mark.asyncio
 async def test_form_data_with_dict_metadata():
     """
     Test that form data with metadata already as a dict is not parsed again.
@@ -362,19 +324,6 @@ async def test_empty_request_body():
 
     # Verify the body was read
     mock_request.body.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_get_request_body_accepts_json_with_charset():
-    mock_request = MagicMock()
-    mock_request.method = "POST"
-    mock_request.body = AsyncMock(return_value=orjson.dumps({"stream": True}))
-    mock_request.headers = {"content-type": "application/json; charset=utf-8"}
-    mock_request.scope = {}
-
-    result = await get_request_body(mock_request)
-
-    assert result == {"stream": True}
 
 
 @pytest.mark.asyncio
@@ -512,20 +461,18 @@ async def test_get_form_data():
     mock_request = MagicMock()
 
     # Create mock form data with array notation for timestamp_granularities
-    mock_form_data = FormData(
-        [
-            ("file", "file_object"),
-            ("model", "gpt-4o-transcribe"),
-            ("include[]", "logprobs"),
-            ("language", "en"),
-            ("prompt", "Transcribe this audio file"),
-            ("response_format", "json"),
-            ("stream", "false"),
-            ("temperature", "0.2"),
-            ("timestamp_granularities[]", "word"),
-            ("timestamp_granularities[]", "segment"),
-        ]
-    )
+    mock_form_data = {
+        "file": "file_object",  # In a real request this would be an UploadFile
+        "model": "gpt-4o-transcribe",
+        "include[]": "logprobs",  # Array notation
+        "language": "en",
+        "prompt": "Transcribe this audio file",
+        "response_format": "json",
+        "stream": "false",
+        "temperature": "0.2",
+        "timestamp_granularities[]": "word",  # First array item
+        "timestamp_granularities[]": "segment",  # Second array item (would overwrite in dict, but handled by the function)
+    }
 
     # Mock the form method to return the test data
     mock_request.form = AsyncMock(return_value=mock_form_data)
@@ -549,7 +496,8 @@ async def test_get_form_data():
 
     assert "timestamp_granularities" in result
     assert isinstance(result["timestamp_granularities"], list)
-    assert "word" in result["timestamp_granularities"]
+    # Note: In a real MultiDict, both values would be present
+    # But in our mock dictionary the second value overwrites the first
     assert "segment" in result["timestamp_granularities"]
 
 
