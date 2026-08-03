@@ -4172,13 +4172,17 @@ class BaseLLMHTTPHandler:
             sync_httpx_client = client
 
         try:
-            cancel_response = self._dispatch_batch_http_request(
-                httpx_client=sync_httpx_client,
-                transformed_request=transformed_request,
-                headers=headers,
-                api_base=api_base,
-            )
-            self._raise_for_batch_http_status(response=cancel_response)
+            if not (isinstance(transformed_request, dict) and "method" in transformed_request):
+                raise ValueError("cancel_batch provider-config path expects a pre-signed request")
+            method = transformed_request["method"].lower()
+            request_kwargs = {  # mutable-ok: httpx kwargs for pre-signed cancel
+                "url": transformed_request["url"],
+                "headers": transformed_request["headers"],
+            }
+            if method != "get" and transformed_request.get("data") is not None:
+                request_kwargs["data"] = transformed_request["data"]
+            cancel_response = getattr(sync_httpx_client, method)(**request_kwargs)
+            cancel_response.raise_for_status()
         except Exception as e:  # noqa: BLE001  # provider errors are remapped via _handle_error
             verbose_logger.exception(f"Error cancelling batch: {e}")
             raise self._handle_error(
@@ -4186,46 +4190,26 @@ class BaseLLMHTTPHandler:
                 provider_config=provider_config,
             )
 
-        if provider_config.should_retrieve_batch_after_cancel():
-            try:
-                retrieve_request = provider_config.transform_retrieve_batch_request(
-                    batch_id=batch_id,
-                    optional_params=litellm_params,
-                    litellm_params=litellm_params,
-                )
-                retrieve_response = self._dispatch_batch_http_request(
-                    httpx_client=sync_httpx_client,
-                    transformed_request=retrieve_request,
-                    headers=headers,
-                    api_base=api_base,
-                )
-                self._raise_for_batch_http_status(response=retrieve_response)
-            except Exception as e:  # noqa: BLE001  # provider errors are remapped via _handle_error
-                verbose_logger.exception(f"Error retrieving batch after cancel: {e}")
-                raise self._handle_error(
-                    e=e,
-                    provider_config=provider_config,
-                )
-            return provider_config.transform_retrieve_batch_response(
-                model=model,
-                raw_response=retrieve_response,
-                logging_obj=logging_obj,
-                litellm_params=litellm_params,
-            )
-
-        return provider_config.transform_cancel_batch_response(
-            model=model,
-            raw_response=cancel_response,
-            logging_obj=logging_obj,
+        return self.retrieve_batch(
+            batch_id=batch_id,
             litellm_params=litellm_params,
+            provider_config=provider_config,
+            headers=headers,
+            api_base=api_base,
+            api_key=api_key,
+            logging_obj=logging_obj,
+            _is_async=False,
+            client=sync_httpx_client,
+            timeout=timeout,
+            model=model,
         )
 
     async def async_cancel_batch(
         self,
-        transformed_request: Union[bytes, str, dict],  # mutable-ok: mirrors async_retrieve_batch request envelope
-        litellm_params: dict,  # mutable-ok: mirrors async_retrieve_batch provider-config dispatch contract
+        transformed_request: Union[bytes, str, dict],  # mutable-ok: mirrors async_retrieve_batch
+        litellm_params: dict,  # mutable-ok: mirrors async_retrieve_batch
         provider_config: "BaseBatchesConfig",
-        headers: dict,  # mutable-ok: mirrors async_retrieve_batch provider-config dispatch contract
+        headers: dict,  # mutable-ok: mirrors async_retrieve_batch
         api_base: str | None,
         api_key: str | None,
         logging_obj: "LiteLLMLoggingObj",
@@ -4251,13 +4235,17 @@ class BaseLLMHTTPHandler:
         )
 
         try:
-            cancel_response = await self._async_dispatch_batch_http_request(
-                httpx_client=async_httpx_client,
-                transformed_request=transformed_request,
-                headers=headers,
-                api_base=api_base,
-            )
-            self._raise_for_batch_http_status(response=cancel_response)
+            if not (isinstance(transformed_request, dict) and "method" in transformed_request):
+                raise ValueError("cancel_batch provider-config path expects a pre-signed request")
+            method = transformed_request["method"].lower()
+            request_kwargs = {  # mutable-ok: httpx kwargs for pre-signed cancel
+                "url": transformed_request["url"],
+                "headers": transformed_request["headers"],
+            }
+            if method != "get" and transformed_request.get("data") is not None:
+                request_kwargs["data"] = transformed_request["data"]
+            cancel_response = await getattr(async_httpx_client, method)(**request_kwargs)
+            cancel_response.raise_for_status()
         except Exception as e:  # noqa: BLE001  # provider errors are remapped via _handle_error
             verbose_logger.exception(f"Error cancelling batch: {e}")
             raise self._handle_error(
@@ -4265,121 +4253,22 @@ class BaseLLMHTTPHandler:
                 provider_config=provider_config,
             )
 
-        if provider_config.should_retrieve_batch_after_cancel():
-            if batch_id is None:
-                raise ValueError("batch_id is required to retrieve batch after cancel")
-            try:
-                retrieve_request = provider_config.transform_retrieve_batch_request(
-                    batch_id=batch_id,
-                    optional_params=litellm_params,
-                    litellm_params=litellm_params,
-                )
-                retrieve_response = await self._async_dispatch_batch_http_request(
-                    httpx_client=async_httpx_client,
-                    transformed_request=retrieve_request,
-                    headers=headers,
-                    api_base=api_base,
-                )
-                self._raise_for_batch_http_status(response=retrieve_response)
-            except Exception as e:  # noqa: BLE001  # provider errors are remapped via _handle_error
-                verbose_logger.exception(f"Error retrieving batch after cancel: {e}")
-                raise self._handle_error(
-                    e=e,
-                    provider_config=provider_config,
-                )
-            return provider_config.transform_retrieve_batch_response(
-                model=model,
-                raw_response=retrieve_response,
-                logging_obj=logging_obj,
-                litellm_params=litellm_params,
-            )
+        if batch_id is None:
+            raise ValueError("batch_id is required to retrieve batch after cancel")
 
-        return provider_config.transform_cancel_batch_response(
-            model=model,
-            raw_response=cancel_response,
-            logging_obj=logging_obj,
+        return await self.retrieve_batch(
+            batch_id=batch_id,
             litellm_params=litellm_params,
+            provider_config=provider_config,
+            headers=headers,
+            api_base=api_base,
+            api_key=api_key,
+            logging_obj=logging_obj,
+            _is_async=True,
+            client=async_httpx_client,
+            timeout=timeout,
+            model=model,
         )
-
-    def _raise_for_batch_http_status(
-        self,
-        response: httpx.Response,
-    ) -> None:
-        if 200 <= response.status_code < 300:
-            return
-        response.raise_for_status()
-
-    def _dispatch_batch_http_request(
-        self,
-        httpx_client: "HTTPHandler",
-        transformed_request: Union[bytes, str, dict],  # mutable-ok: pre-signed or json request envelope
-        headers: dict,  # mutable-ok: outbound HTTP headers for non-presigned cancel
-        api_base: str | None,
-    ) -> httpx.Response:
-        if isinstance(transformed_request, dict) and "method" in transformed_request:
-            method = transformed_request["method"].lower()
-            include_data = method != "get" and transformed_request.get("data") is not None
-            request_kwargs = (
-                {  # mutable-ok: httpx client method kwargs built once for dispatch
-                    "url": transformed_request["url"],
-                    "headers": transformed_request["headers"],
-                    "data": transformed_request["data"],
-                }
-                if include_data
-                else {  # mutable-ok: httpx client method kwargs built once for dispatch
-                    "url": transformed_request["url"],
-                    "headers": transformed_request["headers"],
-                }
-            )
-            return getattr(httpx_client, method)(**request_kwargs)
-        if isinstance(transformed_request, dict) and api_base:
-            return httpx_client.post(
-                url=api_base,
-                headers={  # mutable-ok: one-shot request headers for json cancel
-                    **headers,
-                    "Content-Type": "application/json",
-                },
-                json=transformed_request,
-            )
-        if not api_base:
-            raise ValueError("api_base is required for non-pre-signed requests")
-        return httpx_client.post(url=api_base, headers=headers)
-
-    async def _async_dispatch_batch_http_request(
-        self,
-        httpx_client: "AsyncHTTPHandler",
-        transformed_request: Union[bytes, str, dict],  # mutable-ok: pre-signed or json request envelope
-        headers: dict,  # mutable-ok: outbound HTTP headers for non-presigned cancel
-        api_base: str | None,
-    ) -> httpx.Response:
-        if isinstance(transformed_request, dict) and "method" in transformed_request:
-            method = transformed_request["method"].lower()
-            include_data = method != "get" and transformed_request.get("data") is not None
-            request_kwargs = (
-                {  # mutable-ok: httpx client method kwargs built once for dispatch
-                    "url": transformed_request["url"],
-                    "headers": transformed_request["headers"],
-                    "data": transformed_request["data"],
-                }
-                if include_data
-                else {  # mutable-ok: httpx client method kwargs built once for dispatch
-                    "url": transformed_request["url"],
-                    "headers": transformed_request["headers"],
-                }
-            )
-            return await getattr(httpx_client, method)(**request_kwargs)
-        if isinstance(transformed_request, dict) and api_base:
-            return await httpx_client.post(
-                url=api_base,
-                headers={  # mutable-ok: one-shot request headers for json cancel
-                    **headers,
-                    "Content-Type": "application/json",
-                },
-                json=transformed_request,
-            )
-        if not api_base:
-            raise ValueError("api_base is required for non-pre-signed requests")
-        return await httpx_client.post(url=api_base, headers=headers)
 
     def cancel_response_api_handler(
         self,

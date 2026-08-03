@@ -370,12 +370,9 @@ class BedrockBatchesConfig(BaseAWSLLM, BaseBatchesConfig):
         optional_params: dict,  # mutable-ok: sign_aws_request requires a plain dict
         region: str,
     ) -> dict:  # mutable-ok: sign_aws_request requires a plain dict
-        explicit_region = optional_params.get("aws_region_name")
-        if explicit_region is not None and explicit_region != region:
-            raise ValueError(f"aws_region_name '{explicit_region}' does not match region '{region}' in batch ARN")
-        if explicit_region == region:
+        if optional_params.get("aws_region_name") == region:
             return optional_params
-        return {  # mutable-ok: sign_aws_request needs a plain dict; ARN region must override env/default
+        return {  # mutable-ok: ARN region must win over env/default for SigV4
             **optional_params,
             "aws_region_name": region,
         }
@@ -420,9 +417,6 @@ class BedrockBatchesConfig(BaseAWSLLM, BaseBatchesConfig):
             "headers": signed_headers,
             "data": None,
         }
-
-    def should_retrieve_batch_after_cancel(self) -> bool:
-        return True
 
     def transform_cancel_batch_request(
         self,

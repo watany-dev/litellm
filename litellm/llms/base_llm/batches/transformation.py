@@ -200,24 +200,12 @@ class BaseBatchesConfig(ABC):
         """
         pass
 
-    def should_retrieve_batch_after_cancel(self) -> bool:
-        return False
-
     def transform_cancel_batch_request(
         self,
         batch_id: str,
         optional_params: dict,  # mutable-ok: mirrors transform_retrieve_batch_request contract
         litellm_params: dict,  # mutable-ok: mirrors transform_retrieve_batch_request contract
     ) -> Union[bytes, str, dict[str, Any]]:  # mutable-ok: mirrors retrieve request union contract
-        raise NotImplementedError(f"Cancel batch is not implemented for {self.custom_llm_provider}")
-
-    def transform_cancel_batch_response(
-        self,
-        model: str | None,
-        raw_response: httpx.Response,
-        logging_obj: LiteLLMLoggingObj,
-        litellm_params: dict,  # mutable-ok: mirrors transform_retrieve_batch_response contract
-    ) -> LiteLLMBatch:
         raise NotImplementedError(f"Cancel batch is not implemented for {self.custom_llm_provider}")
 
     @abstractmethod

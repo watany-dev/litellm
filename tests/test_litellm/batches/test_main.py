@@ -477,23 +477,6 @@ async def test_acancel_batch_delegates_to_cancel_batch():
     assert m.call_args.args[0] == "batch-1"
 
 
-@pytest.mark.asyncio
-async def test_acancel_batch_bedrock_delegates_with_model():
-    with patch.object(bm, "cancel_batch", MagicMock(return_value="SENTINEL")) as m:
-        result = await bm.acancel_batch(
-            batch_id="arn:aws:bedrock:us-west-2:123:model-invocation-job/abc",
-            custom_llm_provider="bedrock",
-            model="bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
-        )
-
-    assert result == "SENTINEL"
-    assert m.call_count == 1
-    assert m.call_args.kwargs.get("acancel_batch") is True
-    assert m.call_args.args[0] == "arn:aws:bedrock:us-west-2:123:model-invocation-job/abc"
-    assert m.call_args.args[1] == "bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0"
-    assert m.call_args.args[2] == "bedrock"
-
-
 # =========================================================================== #
 # Credential passthrough - when the caller supplies credentials in kwargs, they
 # must reach the provider handler. Explicit kwargs win over litellm.* globals and

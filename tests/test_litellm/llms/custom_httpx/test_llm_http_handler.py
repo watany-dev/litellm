@@ -2074,22 +2074,17 @@ async def test_anthropic_invalid_thinking_signature_retry_resigns_bedrock_reques
 
 
 # --------------------------------------------------------------------------- #
-# cancel_batch / async_cancel_batch
+# cancel_batch - Stop then reuse retrieve_batch
 # --------------------------------------------------------------------------- #
 
 
 class _FakeBatchesConfig:
     custom_llm_provider = litellm.LlmProviders.BEDROCK
 
-    def __init__(self, retrieve_after_cancel: bool = True):
-        self._retrieve_after_cancel = retrieve_after_cancel
+    def __init__(self):
         self.cancel_request_calls = 0
-        self.cancel_response_calls = 0
         self.retrieve_request_calls = 0
         self.retrieve_response_calls = 0
-
-    def should_retrieve_batch_after_cancel(self) -> bool:
-        return self._retrieve_after_cancel
 
     def transform_cancel_batch_request(self, batch_id, optional_params, litellm_params):
         self.cancel_request_calls += 1
@@ -2108,33 +2103,6 @@ class _FakeBatchesConfig:
             "headers": {"Authorization": "signed-get"},
             "data": None,
         }
-
-    def transform_cancel_batch_response(self, model, raw_response, logging_obj, litellm_params):
-        self.cancel_response_calls += 1
-        from litellm.types.utils import LiteLLMBatch
-
-        return LiteLLMBatch(
-            id="from-cancel-response",
-            object="batch",
-            endpoint="/v1/chat/completions",
-            errors=None,
-            input_file_id="in",
-            completion_window="24h",
-            status="cancelling",
-            output_file_id=None,
-            error_file_id=None,
-            created_at=1,
-            in_progress_at=None,
-            expires_at=None,
-            finalizing_at=None,
-            completed_at=None,
-            failed_at=None,
-            expired_at=None,
-            cancelling_at=None,
-            cancelled_at=None,
-            request_counts=None,
-            metadata=None,
-        )
 
     def transform_retrieve_batch_response(self, model, raw_response, logging_obj, litellm_params):
         self.retrieve_response_calls += 1
@@ -2169,7 +2137,7 @@ class _FakeBatchesConfig:
 
 def test_cancel_batch_presigned_post_then_retrieve():
     handler = BaseLLMHTTPHandler()
-    provider_config = _FakeBatchesConfig(retrieve_after_cancel=True)
+    provider_config = _FakeBatchesConfig()
     logging_obj = Mock()
     logging_obj.pre_call = Mock()
 
@@ -2200,101 +2168,6 @@ def test_cancel_batch_presigned_post_then_retrieve():
     assert provider_config.cancel_request_calls == 1
     assert provider_config.retrieve_request_calls == 1
     assert provider_config.retrieve_response_calls == 1
-    assert provider_config.cancel_response_calls == 0
     client.post.assert_called_once()
     assert client.post.call_args.kwargs["data"] == b""
     client.get.assert_called_once()
-
-
-def test_cancel_batch_uses_cancel_response_when_no_retrieve():
-    handler = BaseLLMHTTPHandler()
-    provider_config = _FakeBatchesConfig(retrieve_after_cancel=False)
-    logging_obj = Mock()
-
-    cancel_response = httpx.Response(
-        200,
-        json={"id": "batch_1", "status": "cancelling"},
-        request=httpx.Request("POST", "https://bedrock.example/stop/x"),
-    )
-    client = Mock(spec=HTTPHandler)
-    client.post.return_value = cancel_response
-
-    result = handler.cancel_batch(
-        batch_id="batch_1",
-        litellm_params={},
-        provider_config=provider_config,
-        headers={},
-        api_base=None,
-        api_key=None,
-        logging_obj=logging_obj,
-        client=client,
-        model="bedrock/claude",
-    )
-
-    assert result.id == "from-cancel-response"
-    assert provider_config.cancel_response_calls == 1
-    assert provider_config.retrieve_request_calls == 0
-    client.get.assert_not_called()
-
-
-def test_cancel_batch_non_2xx_goes_through_handle_error():
-    handler = BaseLLMHTTPHandler()
-    provider_config = _FakeBatchesConfig(retrieve_after_cancel=True)
-    logging_obj = Mock()
-
-    request = httpx.Request("POST", "https://bedrock.example/stop/x")
-    error_response = httpx.Response(409, json={"message": "Conflict"}, request=request)
-    client = Mock(spec=HTTPHandler)
-    client.post.side_effect = httpx.HTTPStatusError("Conflict", request=request, response=error_response)
-
-    with patch.object(handler, "_handle_error", side_effect=RuntimeError("mapped")) as mock_handle:
-        with pytest.raises(RuntimeError, match="mapped"):
-            handler.cancel_batch(
-                batch_id="arn:aws:bedrock:us-west-2:123:model-invocation-job/x",
-                litellm_params={},
-                provider_config=provider_config,
-                headers={},
-                api_base=None,
-                api_key=None,
-                logging_obj=logging_obj,
-                client=client,
-                model="bedrock/claude",
-            )
-    mock_handle.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_async_cancel_batch_presigned_post_then_retrieve():
-    handler = BaseLLMHTTPHandler()
-    provider_config = _FakeBatchesConfig(retrieve_after_cancel=True)
-    logging_obj = Mock()
-    logging_obj.pre_call = Mock()
-
-    cancel_response = httpx.Response(200, content=b"", request=httpx.Request("POST", "https://bedrock.example/stop/x"))
-    retrieve_response = httpx.Response(
-        200,
-        json={"status": "Stopping"},
-        request=httpx.Request("GET", "https://bedrock.example/job/x"),
-    )
-
-    client = AsyncMock(spec=AsyncHTTPHandler)
-    client.post.return_value = cancel_response
-    client.get.return_value = retrieve_response
-
-    result = await handler.cancel_batch(
-        batch_id="arn:aws:bedrock:us-west-2:123:model-invocation-job/x",
-        litellm_params={},
-        provider_config=provider_config,
-        headers={},
-        api_base=None,
-        api_key=None,
-        logging_obj=logging_obj,
-        client=client,
-        model="bedrock/claude",
-        _is_async=True,
-    )
-
-    assert result.id == "from-retrieve-response"
-    assert provider_config.retrieve_response_calls == 1
-    client.post.assert_awaited_once()
-    client.get.assert_awaited_once()

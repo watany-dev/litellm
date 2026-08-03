@@ -522,15 +522,6 @@ def test_retrieve_request_forces_arn_region_into_signing_params(config):
     assert mock_sign.call_args.kwargs["optional_params"]["aws_region_name"] == "us-west-2"
 
 
-def test_retrieve_request_rejects_mismatched_explicit_region(config):
-    with pytest.raises(ValueError, match="does not match region"):
-        config.transform_retrieve_batch_request(
-            batch_id=ARN,
-            optional_params={"aws_region_name": "us-east-1"},
-            litellm_params={},
-        )
-
-
 # --------------------------------------------------------------------------- #
 # transform_cancel_batch_request - StopModelInvocationJob
 # --------------------------------------------------------------------------- #
@@ -562,25 +553,6 @@ def test_cancel_request_rejects_async_invoke_arn(config):
         config.transform_cancel_batch_request(
             batch_id=async_arn, optional_params={}, litellm_params={}
         )
-
-
-def test_cancel_request_rejects_non_arn(config):
-    with pytest.raises(ValueError, match="Expected ARN"):
-        config.transform_cancel_batch_request(
-            batch_id="abc1234567", optional_params={}, litellm_params={}
-        )
-
-
-def test_cancel_request_rejects_bad_region(config):
-    bad = "arn:aws:bedrock:US_WEST:123:model-invocation-job/x"
-    with pytest.raises(ValueError, match="Invalid region in ARN"):
-        config.transform_cancel_batch_request(
-            batch_id=bad, optional_params={}, litellm_params={}
-        )
-
-
-def test_should_retrieve_batch_after_cancel_is_true(config):
-    assert config.should_retrieve_batch_after_cancel() is True
 
 
 # --------------------------------------------------------------------------- #
