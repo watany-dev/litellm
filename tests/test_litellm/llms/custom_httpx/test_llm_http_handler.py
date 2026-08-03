@@ -1097,9 +1097,7 @@ def test_sync_delete_responses_sets_json_content_type():
         ({}, True, None, None),
     ],
 )
-def test_resolve_anthropic_messages_timeout(
-    monkeypatch, litellm_params_kwargs, stream, global_timeout, expected
-):
+def test_resolve_anthropic_messages_timeout(monkeypatch, litellm_params_kwargs, stream, global_timeout, expected):
     from litellm.constants import DEFAULT_REQUEST_TIMEOUT_SECONDS
 
     if global_timeout is None:
@@ -1115,9 +1113,7 @@ def test_resolve_anthropic_messages_timeout(
         )
     else:
         monkeypatch.setattr("litellm.request_timeout", global_timeout, raising=False)
-        monkeypatch.setattr(
-            "litellm.request_timeout_explicitly_set", True, raising=False
-        )
+        monkeypatch.setattr("litellm.request_timeout_explicitly_set", True, raising=False)
 
     resolved = BaseLLMHTTPHandler._resolve_anthropic_messages_timeout(
         litellm_params=GenericLiteLLMParams(**litellm_params_kwargs),
@@ -1142,9 +1138,7 @@ async def test_async_anthropic_messages_handler_forwards_request_timeout(monkeyp
         return_value=({"x-api-key": "k"}, "https://api.anthropic.com")
     )
     mock_config.should_filter_anthropic_beta_headers = Mock(return_value=False)
-    mock_config.transform_anthropic_messages_request = Mock(
-        return_value={"model": "claude", "messages": []}
-    )
+    mock_config.transform_anthropic_messages_request = Mock(return_value={"model": "claude", "messages": []})
     mock_config.get_complete_url = Mock(return_value="https://api.anthropic.com/v1/messages")
     mock_config.sign_request = Mock(return_value=({"x-api-key": "k"}, None))
     mock_config.max_retry_on_anthropic_messages_http_error = 1
@@ -1190,9 +1184,7 @@ async def test_async_anthropic_messages_handler_forwards_stream_timeout(monkeypa
         return_value=({"x-api-key": "k"}, "https://api.anthropic.com")
     )
     mock_config.should_filter_anthropic_beta_headers = Mock(return_value=False)
-    mock_config.transform_anthropic_messages_request = Mock(
-        return_value={"model": "claude", "messages": []}
-    )
+    mock_config.transform_anthropic_messages_request = Mock(return_value={"model": "claude", "messages": []})
     mock_config.get_complete_url = Mock(return_value="https://api.anthropic.com/v1/messages")
     mock_config.sign_request = Mock(return_value=({"x-api-key": "k"}, None))
     mock_config.max_retry_on_anthropic_messages_http_error = 1
@@ -1602,7 +1594,13 @@ async def test_async_anthropic_messages_handler_passes_api_key_to_agentic_hooks(
     )
     mock_config.sign_request = Mock(return_value=({}, None))
 
-    fake_raw_response = {"id": "msg_1", "type": "message", "role": "assistant", "content": [], "stop_reason": "end_turn"}
+    fake_raw_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [],
+        "stop_reason": "end_turn",
+    }
     mock_config.transform_anthropic_messages_response = Mock(return_value=fake_raw_response)
 
     mock_logging_obj = Mock()
@@ -1622,10 +1620,17 @@ async def test_async_anthropic_messages_handler_passes_api_key_to_agentic_hooks(
     mock_httpx_response.status_code = 200
 
     with (
-        patch.object(handler, "_async_post_anthropic_messages_with_http_error_retry", new=AsyncMock(return_value=mock_httpx_response)),
+        patch.object(
+            handler,
+            "_async_post_anthropic_messages_with_http_error_retry",
+            new=AsyncMock(return_value=mock_httpx_response),
+        ),
         patch.object(handler, "_call_agentic_completion_hooks", side_effect=fake_agentic_hooks),
         patch("litellm.llms.custom_httpx.llm_http_handler.get_async_httpx_client"),
-        patch("litellm.litellm_core_utils.get_provider_specific_headers.ProviderSpecificHeaderUtils.get_provider_specific_headers", return_value=None),
+        patch(
+            "litellm.litellm_core_utils.get_provider_specific_headers.ProviderSpecificHeaderUtils.get_provider_specific_headers",
+            return_value=None,
+        ),
     ):
         result = await handler.async_anthropic_messages_handler(
             model="claude-haiku",
@@ -1799,7 +1804,9 @@ def test_audio_transcriptions_sends_dict_data_as_json_body():
     form-encodes it and silently ignores json=; JSON-body providers (e.g.
     Google Speech-to-Text) need an application/json body."""
     captured = {}
-    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(_capture_json_transcription_request(captured))))
+    client = HTTPHandler(
+        client=httpx.Client(transport=httpx.MockTransport(_capture_json_transcription_request(captured)))
+    )
 
     response = BaseLLMHTTPHandler().audio_transcriptions(
         client=client,
@@ -2035,9 +2042,7 @@ async def test_anthropic_invalid_thinking_signature_retry_resigns_bedrock_reques
     ok_response = httpx.Response(200, json={"id": "msg_1"}, request=httpx.Request("POST", request_url))
 
     class FakeAsyncClient:
-        async def post(
-            self, url, headers, data, stream=False, logging_obj=None, timeout=None
-        ):
+        async def post(self, url, headers, data, stream=False, logging_obj=None, timeout=None):
             posts.append({"headers": dict(headers), "data": data})
             return invalid_signature_response if len(posts) == 1 else ok_response
 
@@ -2071,3 +2076,230 @@ async def test_anthropic_invalid_thinking_signature_retry_resigns_bedrock_reques
     retry_authorization = posts[1]["headers"]["Authorization"]
     assert retry_authorization.startswith("AWS4-HMAC-SHA256")
     assert retry_authorization != first_attempt_headers["Authorization"]
+
+
+# --------------------------------------------------------------------------- #
+# cancel_batch / async_cancel_batch
+# --------------------------------------------------------------------------- #
+
+
+class _FakeBatchesConfig:
+    custom_llm_provider = litellm.LlmProviders.BEDROCK
+
+    def __init__(self, retrieve_after_cancel: bool = True):
+        self._retrieve_after_cancel = retrieve_after_cancel
+        self.cancel_request_calls = 0
+        self.cancel_response_calls = 0
+        self.retrieve_request_calls = 0
+        self.retrieve_response_calls = 0
+
+    def should_retrieve_batch_after_cancel(self) -> bool:
+        return self._retrieve_after_cancel
+
+    def transform_cancel_batch_request(self, batch_id, optional_params, litellm_params):
+        self.cancel_request_calls += 1
+        return {
+            "method": "POST",
+            "url": f"https://bedrock.example/stop/{batch_id}",
+            "headers": {"Authorization": "signed-cancel"},
+            "data": b"",
+        }
+
+    def transform_retrieve_batch_request(self, batch_id, optional_params, litellm_params):
+        self.retrieve_request_calls += 1
+        return {
+            "method": "GET",
+            "url": f"https://bedrock.example/job/{batch_id}",
+            "headers": {"Authorization": "signed-get"},
+            "data": None,
+        }
+
+    def transform_cancel_batch_response(self, model, raw_response, logging_obj, litellm_params):
+        self.cancel_response_calls += 1
+        from litellm.types.utils import LiteLLMBatch
+
+        return LiteLLMBatch(
+            id="from-cancel-response",
+            object="batch",
+            endpoint="/v1/chat/completions",
+            errors=None,
+            input_file_id="in",
+            completion_window="24h",
+            status="cancelling",
+            output_file_id=None,
+            error_file_id=None,
+            created_at=1,
+            in_progress_at=None,
+            expires_at=None,
+            finalizing_at=None,
+            completed_at=None,
+            failed_at=None,
+            expired_at=None,
+            cancelling_at=None,
+            cancelled_at=None,
+            request_counts=None,
+            metadata=None,
+        )
+
+    def transform_retrieve_batch_response(self, model, raw_response, logging_obj, litellm_params):
+        self.retrieve_response_calls += 1
+        from litellm.types.utils import LiteLLMBatch
+
+        return LiteLLMBatch(
+            id="from-retrieve-response",
+            object="batch",
+            endpoint="/v1/chat/completions",
+            errors=None,
+            input_file_id="in",
+            completion_window="24h",
+            status="cancelling",
+            output_file_id=None,
+            error_file_id=None,
+            created_at=1,
+            in_progress_at=None,
+            expires_at=None,
+            finalizing_at=None,
+            completed_at=None,
+            failed_at=None,
+            expired_at=None,
+            cancelling_at=None,
+            cancelled_at=None,
+            request_counts=None,
+            metadata=None,
+        )
+
+    def get_error_class(self, error_message, status_code, headers):
+        return BaseLLMException(status_code=status_code, message=error_message, headers=headers)
+
+
+def test_cancel_batch_presigned_post_then_retrieve():
+    handler = BaseLLMHTTPHandler()
+    provider_config = _FakeBatchesConfig(retrieve_after_cancel=True)
+    logging_obj = Mock()
+    logging_obj.pre_call = Mock()
+
+    cancel_response = httpx.Response(200, content=b"", request=httpx.Request("POST", "https://bedrock.example/stop/x"))
+    retrieve_response = httpx.Response(
+        200,
+        json={"jobArn": "arn:aws:bedrock:us-west-2:123:model-invocation-job/x", "status": "Stopping"},
+        request=httpx.Request("GET", "https://bedrock.example/job/x"),
+    )
+
+    client = Mock(spec=HTTPHandler)
+    client.post.return_value = cancel_response
+    client.get.return_value = retrieve_response
+
+    result = handler.cancel_batch(
+        batch_id="arn:aws:bedrock:us-west-2:123:model-invocation-job/x",
+        litellm_params={},
+        provider_config=provider_config,
+        headers={},
+        api_base=None,
+        api_key=None,
+        logging_obj=logging_obj,
+        client=client,
+        model="bedrock/claude",
+    )
+
+    assert result.id == "from-retrieve-response"
+    assert provider_config.cancel_request_calls == 1
+    assert provider_config.retrieve_request_calls == 1
+    assert provider_config.retrieve_response_calls == 1
+    assert provider_config.cancel_response_calls == 0
+    client.post.assert_called_once()
+    assert client.post.call_args.kwargs["data"] == b""
+    client.get.assert_called_once()
+
+
+def test_cancel_batch_uses_cancel_response_when_no_retrieve():
+    handler = BaseLLMHTTPHandler()
+    provider_config = _FakeBatchesConfig(retrieve_after_cancel=False)
+    logging_obj = Mock()
+
+    cancel_response = httpx.Response(
+        200,
+        json={"id": "batch_1", "status": "cancelling"},
+        request=httpx.Request("POST", "https://bedrock.example/stop/x"),
+    )
+    client = Mock(spec=HTTPHandler)
+    client.post.return_value = cancel_response
+
+    result = handler.cancel_batch(
+        batch_id="batch_1",
+        litellm_params={},
+        provider_config=provider_config,
+        headers={},
+        api_base=None,
+        api_key=None,
+        logging_obj=logging_obj,
+        client=client,
+        model="bedrock/claude",
+    )
+
+    assert result.id == "from-cancel-response"
+    assert provider_config.cancel_response_calls == 1
+    assert provider_config.retrieve_request_calls == 0
+    client.get.assert_not_called()
+
+
+def test_cancel_batch_non_2xx_goes_through_handle_error():
+    handler = BaseLLMHTTPHandler()
+    provider_config = _FakeBatchesConfig(retrieve_after_cancel=True)
+    logging_obj = Mock()
+
+    request = httpx.Request("POST", "https://bedrock.example/stop/x")
+    error_response = httpx.Response(409, json={"message": "Conflict"}, request=request)
+    client = Mock(spec=HTTPHandler)
+    client.post.side_effect = httpx.HTTPStatusError("Conflict", request=request, response=error_response)
+
+    with patch.object(handler, "_handle_error", side_effect=RuntimeError("mapped")) as mock_handle:
+        with pytest.raises(RuntimeError, match="mapped"):
+            handler.cancel_batch(
+                batch_id="arn:aws:bedrock:us-west-2:123:model-invocation-job/x",
+                litellm_params={},
+                provider_config=provider_config,
+                headers={},
+                api_base=None,
+                api_key=None,
+                logging_obj=logging_obj,
+                client=client,
+                model="bedrock/claude",
+            )
+    mock_handle.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_cancel_batch_presigned_post_then_retrieve():
+    handler = BaseLLMHTTPHandler()
+    provider_config = _FakeBatchesConfig(retrieve_after_cancel=True)
+    logging_obj = Mock()
+    logging_obj.pre_call = Mock()
+
+    cancel_response = httpx.Response(200, content=b"", request=httpx.Request("POST", "https://bedrock.example/stop/x"))
+    retrieve_response = httpx.Response(
+        200,
+        json={"status": "Stopping"},
+        request=httpx.Request("GET", "https://bedrock.example/job/x"),
+    )
+
+    client = AsyncMock(spec=AsyncHTTPHandler)
+    client.post.return_value = cancel_response
+    client.get.return_value = retrieve_response
+
+    result = await handler.cancel_batch(
+        batch_id="arn:aws:bedrock:us-west-2:123:model-invocation-job/x",
+        litellm_params={},
+        provider_config=provider_config,
+        headers={},
+        api_base=None,
+        api_key=None,
+        logging_obj=logging_obj,
+        client=client,
+        model="bedrock/claude",
+        _is_async=True,
+    )
+
+    assert result.id == "from-retrieve-response"
+    assert provider_config.retrieve_response_calls == 1
+    client.post.assert_awaited_once()
+    client.get.assert_awaited_once()

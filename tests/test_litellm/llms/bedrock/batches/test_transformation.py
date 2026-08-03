@@ -584,7 +584,7 @@ def test_cancel_request_rejects_bad_region(config):
 
 
 def test_should_retrieve_batch_after_cancel_is_true(config):
-    assert config.should_retrieve_batch_after_cancel is True
+    assert config.should_retrieve_batch_after_cancel() is True
 
 
 # --------------------------------------------------------------------------- #
