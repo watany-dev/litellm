@@ -347,9 +347,13 @@ class BedrockBatchesConfig(BaseAWSLLM, BaseBatchesConfig):
 
     @staticmethod
     def _validate_and_encode_job_arn(batch_id: str) -> tuple[str, str]:
+        # For Bedrock, batch_id should be the full job ARN
+        # The GetModelInvocationJob / StopModelInvocationJob APIs expect the full ARN as the identifier
         if not batch_id.startswith("arn:aws:bedrock:"):
             raise ValueError(f"Invalid batch_id format. Expected ARN, got: {batch_id}")
 
+        # Extract the job identifier from the ARN - use the full ARN path part
+        # ARN format: arn:aws:bedrock:region:account:model-invocation-job/job-name
         arn_parts = batch_id.split(":")
         if len(arn_parts) < 6:
             raise ValueError(f"Invalid ARN format: {batch_id}")
@@ -358,11 +362,12 @@ class BedrockBatchesConfig(BaseAWSLLM, BaseBatchesConfig):
         if not re.match(r"^[a-z][a-z0-9-]*$", region):
             raise ValueError(f"Invalid region in ARN: {batch_id}")
 
+        # Use the FULL ARN as jobIdentifier and URL-encode it (includes ':' and '/')
         return region, urllib.parse.quote(batch_id, safe="")
 
     @staticmethod
     def _signing_params_for_arn_region(
-        optional_params: dict,  # mutable-ok: AWS optional params mapping required by sign_aws_request
+        optional_params: dict,  # mutable-ok: sign_aws_request requires a plain dict
         region: str,
     ) -> dict:  # mutable-ok: sign_aws_request requires a plain dict
         explicit_region = optional_params.get("aws_region_name")
@@ -378,22 +383,38 @@ class BedrockBatchesConfig(BaseAWSLLM, BaseBatchesConfig):
     def transform_retrieve_batch_request(
         self,
         batch_id: str,
-        optional_params: dict,  # mutable-ok: mirrors BaseBatchesConfig retrieve contract
-        litellm_params: dict,  # mutable-ok: mirrors BaseBatchesConfig retrieve contract
-    ) -> dict[str, Any]:  # mutable-ok: pre-signed request envelope required by HTTP handler
+        optional_params: dict,
+        litellm_params: dict,
+    ) -> Dict[str, Any]:
+        """
+        Transform batch retrieval request for Bedrock.
+
+        Args:
+            batch_id: Bedrock job ARN
+            optional_params: Optional parameters
+            litellm_params: LiteLLM parameters
+
+        Returns:
+            Transformed request data for Bedrock GetModelInvocationJob API
+        """
         region, encoded_arn = self._validate_and_encode_job_arn(batch_id)
+
+        # Build the endpoint URL for GetModelInvocationJob
+        # AWS API format: GET /model-invocation-job/{jobIdentifier}
         endpoint_url = f"https://bedrock.{region}.amazonaws.com/model-invocation-job/{encoded_arn}"
         signing_params = self._signing_params_for_arn_region(optional_params, region)
 
+        # Use common utility for AWS signing
         signed_headers, _ = self.common_utils.sign_aws_request(
             service_name="bedrock",
-            data={},  # mutable-ok: GET signing payload matches existing Bedrock retrieve contract
+            data={},  # GET request has no body
             endpoint_url=endpoint_url,
             optional_params=signing_params,
             method="GET",
         )
 
-        return {  # mutable-ok: BaseBatchesConfig retrieve contract is a pre-signed request dict
+        # Return pre-signed request format
+        return {
             "method": "GET",
             "url": endpoint_url,
             "headers": signed_headers,
@@ -413,9 +434,11 @@ class BedrockBatchesConfig(BaseAWSLLM, BaseBatchesConfig):
             raise ValueError("Cancellation is not supported for Bedrock async-invoke jobs")
 
         region, encoded_arn = self._validate_and_encode_job_arn(batch_id)
+        # AWS API format: POST /model-invocation-job/{jobIdentifier}/stop
         endpoint_url = f"https://bedrock.{region}.amazonaws.com/model-invocation-job/{encoded_arn}/stop"
         signing_params = self._signing_params_for_arn_region(optional_params, region)
 
+        # Use common utility for AWS signing
         signed_headers, signed_data = self.common_utils.sign_aws_request(
             service_name="bedrock",
             data="",
@@ -424,6 +447,7 @@ class BedrockBatchesConfig(BaseAWSLLM, BaseBatchesConfig):
             method="POST",
         )
 
+        # Return pre-signed request format
         return {  # mutable-ok: BaseBatchesConfig cancel contract is a pre-signed request dict
             "method": "POST",
             "url": endpoint_url,

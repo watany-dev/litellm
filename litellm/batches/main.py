@@ -934,13 +934,13 @@ def cancel_batch(
                 batch_id=batch_id,
                 provider_config=provider_config,
                 litellm_params=litellm_params,
-                headers=extra_headers or {},
+                headers=extra_headers or {},  # mutable-ok: cancel handler expects a plain headers dict
                 api_base=optional_params.api_base,
                 api_key=optional_params.api_key,
                 logging_obj=kwargs.get("litellm_logging_obj")
                 or LiteLLMLoggingObj(
                     model=model or f"{custom_llm_provider}/unknown",
-                    messages=[],
+                    messages=[],  # mutable-ok: LiteLLMLoggingObj requires a messages list
                     stream=False,
                     call_type="batch_cancel",
                     start_time=None,
