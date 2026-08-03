@@ -37,6 +37,7 @@ concurrency:
 
 jobs:
   benchmarks:
+    if: github.repository == 'BerriAI/litellm'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
