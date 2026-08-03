@@ -2071,3 +2071,103 @@ async def test_anthropic_invalid_thinking_signature_retry_resigns_bedrock_reques
     retry_authorization = posts[1]["headers"]["Authorization"]
     assert retry_authorization.startswith("AWS4-HMAC-SHA256")
     assert retry_authorization != first_attempt_headers["Authorization"]
+
+
+# --------------------------------------------------------------------------- #
+# cancel_batch - Stop then reuse retrieve_batch
+# --------------------------------------------------------------------------- #
+
+
+class _FakeBatchesConfig:
+    custom_llm_provider = litellm.LlmProviders.BEDROCK
+
+    def __init__(self):
+        self.cancel_request_calls = 0
+        self.retrieve_request_calls = 0
+        self.retrieve_response_calls = 0
+
+    def transform_cancel_batch_request(self, batch_id, optional_params, litellm_params):
+        self.cancel_request_calls += 1
+        return {
+            "method": "POST",
+            "url": f"https://bedrock.example/stop/{batch_id}",
+            "headers": {"Authorization": "signed-cancel"},
+            "data": b"",
+        }
+
+    def transform_retrieve_batch_request(self, batch_id, optional_params, litellm_params):
+        self.retrieve_request_calls += 1
+        return {
+            "method": "GET",
+            "url": f"https://bedrock.example/job/{batch_id}",
+            "headers": {"Authorization": "signed-get"},
+            "data": None,
+        }
+
+    def transform_retrieve_batch_response(self, model, raw_response, logging_obj, litellm_params):
+        self.retrieve_response_calls += 1
+        from litellm.types.utils import LiteLLMBatch
+
+        return LiteLLMBatch(
+            id="from-retrieve-response",
+            object="batch",
+            endpoint="/v1/chat/completions",
+            errors=None,
+            input_file_id="in",
+            completion_window="24h",
+            status="cancelling",
+            output_file_id=None,
+            error_file_id=None,
+            created_at=1,
+            in_progress_at=None,
+            expires_at=None,
+            finalizing_at=None,
+            completed_at=None,
+            failed_at=None,
+            expired_at=None,
+            cancelling_at=None,
+            cancelled_at=None,
+            request_counts=None,
+            metadata=None,
+        )
+
+    def get_error_class(self, error_message, status_code, headers):
+        return BaseLLMException(status_code=status_code, message=error_message, headers=headers)
+
+
+def test_cancel_batch_presigned_post_then_retrieve():
+    handler = BaseLLMHTTPHandler()
+    provider_config = _FakeBatchesConfig()
+    logging_obj = Mock()
+    logging_obj.pre_call = Mock()
+
+    cancel_response = httpx.Response(200, content=b"", request=httpx.Request("POST", "https://bedrock.example/stop/x"))
+    retrieve_response = httpx.Response(
+        200,
+        json={"jobArn": "arn:aws:bedrock:us-west-2:123:model-invocation-job/x", "status": "Stopping"},
+        request=httpx.Request("GET", "https://bedrock.example/job/x"),
+    )
+
+    client = Mock(spec=HTTPHandler)
+    client.post.return_value = cancel_response
+    client.get.return_value = retrieve_response
+
+    result = handler.cancel_batch(
+        batch_id="arn:aws:bedrock:us-west-2:123:model-invocation-job/x",
+        litellm_params={},
+        provider_config=provider_config,
+        headers={},
+        api_base=None,
+        api_key=None,
+        logging_obj=logging_obj,
+        client=client,
+        model="bedrock/claude",
+    )
+
+    assert result.id == "from-retrieve-response"
+    assert provider_config.cancel_request_calls == 1
+    assert provider_config.retrieve_request_calls == 1
+    assert provider_config.retrieve_response_calls == 1
+    client.post.assert_called_once()
+    assert client.post.call_args.kwargs["data"] == b""
+    client.get.assert_called_once()

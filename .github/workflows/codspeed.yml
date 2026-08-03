@@ -37,6 +37,8 @@ concurrency:
 
 jobs:
   benchmarks:
+    # CodSpeed upload is authenticated for BerriAI/litellm only; forks get 401 after a green suite
+    if: github.repository == 'BerriAI/litellm'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 

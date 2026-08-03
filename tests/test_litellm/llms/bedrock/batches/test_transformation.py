@@ -511,6 +511,50 @@ def test_retrieve_request_rejects_bad_region(config):
         )
 
 
+def test_retrieve_request_forces_arn_region_into_signing_params(config):
+    with patch.object(config.common_utils, "sign_aws_request") as mock_sign:
+        mock_sign.return_value = ({"Authorization": "signed"}, b"")
+        config.transform_retrieve_batch_request(
+            batch_id=ARN,
+            optional_params={"aws_access_key_id": "AKIATEST"},
+            litellm_params={},
+        )
+    assert mock_sign.call_args.kwargs["optional_params"]["aws_region_name"] == "us-west-2"
+
+
+# --------------------------------------------------------------------------- #
+# transform_cancel_batch_request - StopModelInvocationJob
+# --------------------------------------------------------------------------- #
+
+
+def test_cancel_request_builds_stop_url_with_empty_signed_body(config):
+    with patch.object(config.common_utils, "sign_aws_request") as mock_sign:
+        mock_sign.return_value = ({"Authorization": "signed"}, b"")
+        result = config.transform_cancel_batch_request(
+            batch_id=ARN, optional_params={}, litellm_params={}
+        )
+    assert result["method"] == "POST"
+    assert result["headers"] == {"Authorization": "signed"}
+    assert result["data"] == b""
+    assert result["url"].startswith(
+        "https://bedrock.us-west-2.amazonaws.com/model-invocation-job/"
+    )
+    assert result["url"].endswith("/stop")
+    assert "%3A" in result["url"]
+    assert "%2F" in result["url"]
+    assert mock_sign.call_args.kwargs["method"] == "POST"
+    assert mock_sign.call_args.kwargs["data"] == ""
+    assert mock_sign.call_args.kwargs["optional_params"]["aws_region_name"] == "us-west-2"
+
+
+def test_cancel_request_rejects_async_invoke_arn(config):
+    async_arn = "arn:aws:bedrock:us-west-2:123456789012:async-invoke/abc1234567"
+    with pytest.raises(ValueError, match="async-invoke"):
+        config.transform_cancel_batch_request(
+            batch_id=async_arn, optional_params={}, litellm_params={}
+        )
+
+
 # --------------------------------------------------------------------------- #
 # transform_retrieve_batch_response - status, timestamps, files, errors
 # --------------------------------------------------------------------------- #

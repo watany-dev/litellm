@@ -386,6 +386,35 @@ def test_cancel__async_flag_propagates_is_async(seams):
     assert seams.openai.cancel_batch.call_args.kwargs["_is_async"] is True
 
 
+def test_cancel__provider_config_routes_to_base_http_handler(seams):
+    with patch.object(
+        bm.ProviderConfigManager,
+        "get_provider_batches_config",
+        return_value=MagicMock(name="provider_config"),
+    ):
+        result = bm.cancel_batch(
+            batch_id="arn:aws:bedrock:us-west-2:123456789012:model-invocation-job/abc",
+            custom_llm_provider="bedrock",
+            model="bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        )
+
+    assert result is seams.base_http.cancel_batch.return_value
+    _assert_only(seams.base_http.cancel_batch, seams, "cancel_batch")
+    kw = seams.base_http.cancel_batch.call_args.kwargs
+    assert kw["batch_id"].endswith("model-invocation-job/abc")
+    assert kw["model"] == "bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0"
+    assert kw["_is_async"] is False
+
+
+def test_cancel__bedrock_without_model_raises_badrequest(seams):
+    with pytest.raises(litellm.exceptions.BadRequestError, match="requires `model`"):
+        bm.cancel_batch(batch_id="batch-1", custom_llm_provider="bedrock")
+
+    for m in _all_seam_methods(seams, "cancel_batch"):
+        m.assert_not_called()
+    seams.base_http.cancel_batch.assert_not_called()
+
+
 # =========================================================================== #
 # Async wrappers - delegate to the sync function in an executor, set the right
 # "_is_async" flag, and return the result untouched.

@@ -880,6 +880,7 @@ async def cancel_batch(
             )
             # Fix: The helper sets "file_id" but we need "batch_id"
             data["batch_id"] = data.pop("file_id", original_batch_id)
+            data["model"] = model_from_id
 
             # Cancel batch using model credentials
             response = await litellm.acancel_batch(

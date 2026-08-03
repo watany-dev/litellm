@@ -200,6 +200,14 @@ class BaseBatchesConfig(ABC):
         """
         pass
 
+    def transform_cancel_batch_request(
+        self,
+        batch_id: str,
+        optional_params: dict,  # mutable-ok: mirrors transform_retrieve_batch_request contract
+        litellm_params: dict,  # mutable-ok: mirrors transform_retrieve_batch_request contract
+    ) -> Union[bytes, str, dict[str, Any]]:  # mutable-ok: mirrors retrieve request union contract
+        raise NotImplementedError(f"Cancel batch is not implemented for {self.custom_llm_provider}")
+
     @abstractmethod
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[Dict, Headers]

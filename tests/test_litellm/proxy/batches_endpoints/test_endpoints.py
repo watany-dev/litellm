@@ -73,6 +73,13 @@ CREDS: Dict[str, Dict[str, str]] = {
         "api_base": "https://vertex.test",
         "model": "vertex_ai/gemini-2.0",
     },
+    "bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0": {
+        "custom_llm_provider": "bedrock",
+        "api_key": "",
+        "api_base": "",
+        "model": "bedrock/deployment-alias",
+        "aws_region_name": "us-west-2",
+    },
 }
 
 # A real model-encoded file id: decodes to "azure/gpt-4o", strips to "file-original123".
@@ -1688,9 +1695,9 @@ async def test_list__exception_calls_failure_hook(list_harness):
 #   here (unlike retrieve).                                                    #
 #                                                                             #
 #   These tests pin CURRENT behavior so a refactor can't silently change it.  #
-#   Two current-behavior quirks are locked deliberately and noted inline:     #
-#     - SCENARIO 1 forwards the DEPLOYMENT model from creds, not the decoded   #
-#       model (retrieve overrides it; cancel does not).                        #
+#   Current-behavior quirks locked deliberately and noted inline:             #
+#     - SCENARIO 1 forwards the DECODED model (same as retrieve) so provider- #
+#       config providers like bedrock can load their batches config.          #
 #     - SCENARIO 3 rebuilds a CancelBatchRequest and forwards only            #
 #       {custom_llm_provider, batch_id}, dropping enrichment keys.            #
 # =========================================================================== #
@@ -1830,15 +1837,14 @@ async def test_cancel__model_encoded_id(cancel_harness):
     # CREDENTIALS - resolved for the model decoded from the batch id.
     cancel_harness.creds_resolver.assert_called_once_with(model_id="azure/gpt-4o")
 
-    # SEAM PAYLOAD - exact dict. NOTE current behavior: `model` is the
-    # DEPLOYMENT name from creds, NOT the decoded model (cancel, unlike
-    # retrieve, does not override it). Locking this guards the difference.
+    # SEAM PAYLOAD - exact dict. `model` is the DECODED model, not the
+    # deployment from creds (mirrors retrieve so bedrock provider-config works).
     assert cancel_harness.acancel_kwargs() == {
         "custom_llm_provider": "azure",
         "batch_id": "batch_orig123",  # decoded/stripped original id
         "api_key": "sk-azure",
         "api_base": "https://azure.test",
-        "model": "azure/gpt-4o-deployment",
+        "model": "azure/gpt-4o",
     }
 
     # OUTPUT SHAPE - response id re-encoded with the DECODED model.
@@ -1850,13 +1856,33 @@ async def test_cancel__model_encoded_id(cancel_harness):
 
 
 @pytest.mark.asyncio
-async def test_cancel__model_encoded_id_forwards_deployment_model(cancel_harness):
-    """Pin the current contract: cancel forwards the creds' deployment model.
-    If someone adds a decoded-model override (as retrieve has), this flips and
-    must be reviewed."""
+async def test_cancel__model_encoded_id_forwards_decoded_model_not_deployment(cancel_harness):
+    """Regression: cancel must forward the decoded model id, never the
+    deployment name from credential merge. Without the override, bedrock
+    cancel falls into the legacy provider switch and 400s."""
     await call_cancel(cancel_harness, AZURE_BATCH_ID)
 
-    assert cancel_harness.acancel_kwargs()["model"] == "azure/gpt-4o-deployment"
+    assert cancel_harness.acancel_kwargs()["model"] == "azure/gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_cancel__model_encoded_bedrock_batch_id_forwards_decoded_model(cancel_harness):
+    bedrock_batch_id = encode_file_id_with_model(
+        "arn:aws:bedrock:us-west-2:123456789012:model-invocation-job/abc",
+        "bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        id_type="batch",
+    )
+
+    await call_cancel(cancel_harness, bedrock_batch_id)
+
+    kw = cancel_harness.acancel_kwargs()
+    assert kw["custom_llm_provider"] == "bedrock"
+    assert kw["model"] == "bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0"
+    assert kw["batch_id"] == "arn:aws:bedrock:us-west-2:123456789012:model-invocation-job/abc"
+    cancel_harness.router_acancel.assert_not_called()
+    cancel_harness.creds_resolver.assert_called_once_with(
+        model_id="bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0"
+    )
 
 
 @pytest.mark.asyncio
